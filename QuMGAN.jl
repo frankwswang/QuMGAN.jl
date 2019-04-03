@@ -4,6 +4,7 @@ using Yao.Blocks
 using QuAlgorithmZoo
 using Statistics
 
+"""QuMGAN Structure."""
 struct QuMGAN{N}
     target::DefaultRegister
     generator::MatrixBlock{N}
@@ -23,6 +24,7 @@ struct QuMGAN{N}
     depthDB
     depthG
     depthD
+    nM
 
     function QuMGAN(target::DefaultRegister, gen::MatrixBlock, dis::MatrixBlock, 
                    VBit::Int64, RBit::Int64, Nblock::Int64, nBitGB::Int64, nBitDB::Int64, 
@@ -32,12 +34,13 @@ struct QuMGAN{N}
         witness_op = put(nBitGB+1, (nBitGB+1)=>P0)
         gdiffs = collect(gen, AbstractDiff)
         ddiffs = collect(dis, AbstractDiff)
+        nMeasure = 10000
         new{nBitGB}(target, gen, dis, zero_state(nBitGB), witness_op, c, N, gdiffs, ddiffs,
-                    VBit, RBit, Nblock, nBitGB, nBitDB, depthGB, depthDB, depthG, depthD)
+                    VBit, RBit, Nblock, nBitGB, nBitDB, depthGB, depthDB, depthG, depthD, nMeasure)
     end
 end
 
-"""Function to get MPS qubits and classical data from generator."""
+"""Function to get MPS qubits and classical data from Generator."""
 function psiGen(qg::QuMGAN, reg1::DefaultRegister)
     regBit = copy(reg1)
     #println("g1 regBit: $regBit")
@@ -49,7 +52,7 @@ function psiGen(qg::QuMGAN, reg1::DefaultRegister)
         blockN += 1
         psRBit = (qg.nBitGB - qg.RBit + 1):qg.nBitGB
         #println("g2_2_1 psRBit: $psRBit\n")
-        regBStore += (measure(focus!(regBit, psRBit); nshot = 20)  |> mean)*2^(qg.RBit*(qg.Nblock-1-blockN))
+        regBStore += (measure(focus!(regBit, psRBit); nshot = qg.nM)  |> mean)*2^(qg.RBit*(qg.Nblock-1-blockN))
         relax!(regBit, psRBit)
         #println("g2_2_2 regBit: $regBit\n")
         measure_reset!( regBit, psRBit, val = 0)
@@ -60,7 +63,7 @@ function psiGen(qg::QuMGAN, reg1::DefaultRegister)
     [regBit, regBStore]
 end
 
-"""Function to get MPS qubits from discriminator."""
+"""Function to get MPS qubits from Discriminator."""
 function psiDis(qg::QuMGAN, reg1::DefaultRegister, reg1store::Float64)
     regBit = join(copy(reg1), zero_state(1)) 
     #println("d1\n")
@@ -83,32 +86,72 @@ function psiDis(qg::QuMGAN, reg1::DefaultRegister, reg1store::Float64)
     regBit 
 end
 
-"""Function to generate MPS qubits and classical data from target wave function."""
+"""Function to generate MPS qubits and classical data from Target wave function."""
 function TarBitMPS(qg::QuMGAN)
     #println("T1 qg.target: $(qg.target)")
     target = copy(qg.target)
     #println("T2")
     psRBit = (qg.nBitGB+1):qg.N
     #println("T3 psRBit: $(psRBit)\n   target: $(target)")
-    TarStore= measure(focus!(copy(target), psRBit); nshot=20) |> mean
+    TarStore= measure(focus!(copy(target), psRBit); nshot=qg.nM) |> mean
     #println("T4")
     measure_remove!(target, psRBit)
     #println("T5 target: $(nqubits(target)) qg.target: $(nqubits(qg.target))")
     [target, TarStore]
 end
 
-"""Possible way to get(cheating) full state of qubits from generator? [under development]"""
+"""Functions to get wavefunction in each situation."""
+# reg0 |> Generator
+psiRegGen(qg::QuMGAN) = psiGen(qg, qg.reg0)[1]
+# reg0 |> Generator |> Discriminator
+psiGenDis(qg::QuMGAN) = psiDis(qg, (psiGen(qg, qg.reg0))[1], (psiGen(qg, qg.reg0))[2])
+# Target |> Discriminator
+psiTarDis(qg::QuMGAN) = psiDis(qg, TarBitMPS(qg)[1], TarBitMPS(qg)[2])
+
+"""Possible way to get(simulation cheating) full wave function of qubits from generator? [under development]"""
+"""For Testing tracedistance"""
 function GenBitAll(qh::QuMGAN)
 end
 
-psiRegGen(qg::QuMGAN) = psiGen(qg, qg.reg0)[1]
-psiGenDis(qg::QuMGAN) = psiDis(qg, (psiGen(qg, qg.reg0))[1], (psiGen(qg, qg.reg0))[2])
-psiTarDis(qg::QuMGAN) = psiDis(qg, TarBitMPS(qg)[1], TarBitMPS(qg)[2])
-
-"""Tracedistance between target and generator generated wave function(MPS qubits part)."""
-"""need bstter method!!!"""
+"""Tracedistance between Target and Generator generated wave function."""
+"""Need better method!!!"""
+#=
+"""Tracedistance of MPS qubits part."""
 distance(qg::QuMGAN) = tracedist(TarBitMPS(qg)[1], psiRegGen(qg))[]
-#distance(qg::QuMGAN) = tracedist(qg.target, psiRegGen(qg))[] 
+=#
+
+#=
+"""Tracedistance between the whole wave function. Using collapsing data to reconstruct Gen wavefunction."""
+function distance(qg::QuMGAN)
+    regGenAll = psiGen(qg, qg.reg0)
+    GenP1 = regGenAll[1]
+    if (qg.N-qg.nBitGB) != (qg.RBit*(qg.Nblock-1))
+        println("Dim mismatch!!")
+    end
+    GenP2 = product_state(ComplexF64, (qg.N-qg.nBitGB), (regGenAll[2] |> round |> Int64) )
+    Gen = join(GenP2, GenP1)
+    tracedist(qg.target, Gen)[]
+end
+=#
+
+"""Difference between Target and Generator collapsing data."""
+"""Need to figure out how to apply expectCB() to regGenAll[2] original wave function."""
+# Expectation of wavefunction on conputational basis. 
+function expectCB(reg::DefaultRegister)
+    dim = 1<<nqubits(reg)
+    CpOp = diagm(0=>[(dim-1):-1:0;]) 
+    expect(matrixgate(CpOp), reg) |>abs
+end
+# Difference between Target and Generator collapsing data.
+function distance(qg::QuMGAN)
+    regGenAll = psiGen(qg, qg.reg0)
+    TarM = expectCB(qg.target)
+    GenM1 = expectCB(regGenAll[1])
+    GenM2 = regGenAll[2]
+    GenM = GenM1 + GenM2
+    #[TarM, GenM, abs(TarM - GenM) ,(abs(TarM - GenM) / TarM)]
+    abs(TarM - GenM) / TarM
+end
 
 """Function to obtain the gradient of the matrix blocks in QuMGAN circuit."""
 function grad(qcg::QuMGAN)
@@ -122,7 +165,7 @@ function grad(qcg::QuMGAN)
     [-ggrad_g; dgrad_t - dgrad_g]
 end
 
-"""Training function."""
+"""Training Function."""
 function train(qcg::QuMGAN{N}, g_learning_rate::Real, 
                              d_learning_rate::Real, niter::Int) where N
     ng = length(qcg.gdiffs)
@@ -161,10 +204,10 @@ depthG = depthGB * Nblock
 # Number of total depth of Differentiable Circuit in Gnerator, Discriminator part has another qubit for register. 
 depthD = depthDB * Nblock
 
-"""Generate random target wavefunction."""
+"""Generate random Target wavefunction."""
 target = rand_state(nBit)
 
-"""Build the generator and the discriminator of QuMGAN circuit."""
+"""Build Generator and Discriminator of QuMGAN circuit."""
 genblock = random_diff_circuit(nBitGB, depthGB, pair_ring(nBitGB)) |> autodiff(:QC)
 disblock = random_diff_circuit(nBitDB, depthDB, pair_ring(nBitDB)) |> autodiff(:QC)
 gen = chain(nBitGB)

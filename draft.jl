@@ -1,3 +1,9 @@
+using LinearAlgebra
+using Yao
+using Yao.Blocks
+using QuAlgorithmZoo
+using Statistics
+
 #=
 """wavefunction through generator"""
 function psiGen(qg::QuGAN)
@@ -32,3 +38,35 @@ function psiTarDis(qg::QuGAN)
     regDisStore 
 end
 =#
+
+function expectCB(reg::DefaultRegister)
+    dim = 1<<nqubits(reg)
+    CpOp = diagm(0=>[(dim-1):-1:0;]) 
+    expect(matrixgate(CpOp), reg) |>abs
+end
+
+function distance(qg::QuMGAN)
+    regGenAll = psiGen(qg, qg.reg0)
+    GenP1 = regGenAll[1]
+    if (qg.N-qg.nBitGB) != (qg.RBit*(qg.Nblock-1))
+        println("Dim mismatch!!")
+    end
+    GenP2 = product_state(ComplexF64, (qg.N-qg.nBitGB), (regGenAll[2] |> round |> Int64) )
+    Gen = join(GenP2, GenP1)
+    tracedist(qg.target, Gen)[]
+end
+
+
+# function expectCB(reg::DefaultRegister)
+#     dim = 1<<nqubits(reg)
+#     CpOp = diagm(0=>[dim:-1:0;]) 
+#     expect(matrixgate(CpOp), reg) |>abs
+# end
+# function distance(qg::QuMGAN)
+#     regGenAll = psiGen(qg, qg.reg0)
+#     TarM = expectCB(qg.target)
+#     GenM1 = expectCB(regGenAll[1])
+#     GenM2 = regGenAll[2]
+#     GenM = GenM1 + GenM2
+#     [TarM, GenM, abs(TarM - GenM) ,(abs(TarM - GenM) / TarM)]
+# end
