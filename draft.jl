@@ -41,7 +41,7 @@ end
 
 function expectCB(reg::DefaultRegister)
     dim = 1<<nqubits(reg)
-    CpOp = diagm(0=>[(dim-1):-1:0;]) 
+    CpOp = diagm(0=>[0:1:(dim-1);]) 
     expect(matrixgate(CpOp), reg) |>abs
 end
 
@@ -55,18 +55,3 @@ function distance(qg::QuMGAN)
     Gen = join(GenP2, GenP1)
     tracedist(qg.target, Gen)[]
 end
-
-
-# function expectCB(reg::DefaultRegister)
-#     dim = 1<<nqubits(reg)
-#     CpOp = diagm(0=>[dim:-1:0;]) 
-#     expect(matrixgate(CpOp), reg) |>abs
-# end
-# function distance(qg::QuMGAN)
-#     regGenAll = psiGen(qg, qg.reg0)
-#     TarM = expectCB(qg.target)
-#     GenM1 = expectCB(regGenAll[1])
-#     GenM2 = regGenAll[2]
-#     GenM = GenM1 + GenM2
-#     [TarM, GenM, abs(TarM - GenM) ,(abs(TarM - GenM) / TarM)]
-# end

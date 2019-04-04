@@ -49,7 +49,6 @@ distance(qg::QuGAN) = tracedist(qg.target, psi(qg))[]
 """obtain the gradient"""
 function grad(qcg::QuGAN)
     ggrad_g = opdiff.(()->psi_discgen(qcg), qcg.gdiffs, Ref(qcg.witness_op))
-    # ggrad_g = opdiff.(()->psi(qcg), qcg.gdiffs, Ref(qcg.witness_op))
     dgrad_g = opdiff.(()->psi_discgen(qcg), qcg.ddiffs, Ref(qcg.witness_op))
     dgrad_t = opdiff.(()->psi_disctarget(qcg), qcg.ddiffs, Ref(qcg.witness_op))
     [-ggrad_g; dgrad_t - dgrad_g]
@@ -64,8 +63,6 @@ function train(qcg::QuGAN{N}, g_learning_rate::Real,
         dispatch!(+, qcg.generator, -g[1:ng]*g_learning_rate)
         dispatch!(-, qcg.discriminator, -g[ng+1:end]*d_learning_rate)
         (i*20)%niter==0 && println("Step = $i, Trance Distance = $(distance(qcg))")
-        # (i*100)%niter==0 && println(string(typeof(psi(qcg))))
-        # (i*100)%niter==0 && println(string(psi(qcg)))
     end
 end
 
