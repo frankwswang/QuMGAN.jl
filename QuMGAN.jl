@@ -4,14 +4,63 @@ using Yao.Blocks
 using QuAlgorithmZoo
 using Statistics
 
+"""========== Program Inroduction =========="""
+"""
+Quantum Generative Adversarial Network based on Matrix Product States(GuMGAN).
+
+Reference:
+    https://zhuanlan.zhihu.com/p/50361547
+    Benedetti, M., Grant, E., Wossnig, L., & Severini, S. (2018). 
+    Adversarial quantum circuit learning for pure state approximation, 1–14.
+"""
+
+
+"""========== Sub-function for QuMGAN =========="""
+
+"""Structure of parameters for QuMGAN."""
+struct parSetup
+    #= Input parameters =#
+    nBit    # Bit number of all.
+    depthGB # Depth for GAN training in each generator block.
+    depthDB # Depth for GAN training in each discriminator block.
+    VBit    # Number V of bonding bits in each block.
+    RBit    # Number R of resusable bits in each block.
+
+    #= Secondary parameters =#
+    Nblock  # Number(Int64) of MPS Blocks / Times of bit reusing. When nBit = VBit + RBit, qubits returns to non-MPS.
+    nBitGB  # Number of total bits in each generator block. 
+    nBitDB  # Number of total bits in each discriminator block / the total bit number for the circuit. 
+    function parSetup(nBit::Int64, depthGB::Int64, deothDB::Int64, VBit::Int64, RBit::Int64)
+        typeof((nBit - VBit - RBit) / RBit) != Int64 && println("Error: Nblock is not Int!") 
+        Nblock = Int((nBit - VBit - RBit) / RBit + 1)
+        nBitGB = VBit + RBit
+        nBitDB = nBitGB+1
+        new(nBit, depthGB, deothDB, VBit, RBit, Nblock, nBitGB, nBitDB)
+    end
+end
+
+"""Function to build Gnenrator and Discriminator for QuMGAN."""
+function buildGD(nBitB::Int64, depthB::Int64, Nblock::Int64)
+    CBlock = random_diff_circuit(nBitB, depthB, pair_ring(nBitB)) 
+    CBlockV = []
+    #println("b1 NBlock: $(Nblock)")
+    for i = 1:Nblock
+        CBlockV = push!(CBlockV, CBlock)
+    end
+    #println("b2  CBlockV: $(CBlockV)")
+    CBlockAll = chain(nBitB,CBlockV)
+    #println("b3")
+    CBlockAll = dispatch!(CBlockAll, :random) |> autodiff(:QC)
+    #println("b4")
+end
+
 """QuMGAN Structure."""
 struct QuMGAN{N}
     target::DefaultRegister
     generator::MatrixBlock{N}
     discriminator::MatrixBlock
     reg0::DefaultRegister
-    witness_op::MatrixBlock
-    circuit::AbstractBlock
+    witnessOp::MatrixBlock
     N
     gdiffs
     ddiffs
@@ -22,35 +71,19 @@ struct QuMGAN{N}
     nBitDB
     depthGB
     depthDB
-    nCBlockGB
-    nCBlockDB
-    nCBlockG
-    nCBlockD
     nM
 
-    function QuMGAN(target::DefaultRegister, gen::MatrixBlock, dis::MatrixBlock, 
-                   VBit::Int64, RBit::Int64, Nblock::Int64, 
-                   nBitGB::Int64, nBitDB::Int64, depthGB::Int64, depthDB::Int64)
+    function QuMGAN(target::DefaultRegister, VBit::Int64, RBit::Int64, 
+                    depthGB::Int64, depthDB::Int64, Nblock::Int64, nBitGB::Int64, nBitDB::Int64)
         N = nqubits(target)
-        if Nblock == 1
-            nCBlockGB = depthGB*2+1 
-            nCBlockDB = depthDB*2+1
-            nCBlockG = nCBlockGB * Nblock 
-            nCBlockD = nCBlockDB * Nblock
-        else
-            nCBlockGB = 1
-            nCBlockDB = 1
-            nCBlockG = Nblock
-            nCBlockD = Nblock
-        end
-        c = sequence(gen, addbit(1), dis)
-        witness_op = put(nBitGB+1, (nBitGB+1)=>P0)
+        gen = buildGD(nBitGB, depthGB, Nblock)
+        dis = buildGD(nBitDB, depthDB, Nblock)
+        witnessOp = put(nBitGB+1, (nBitGB+1)=>P0)
         gdiffs = collect(gen, AbstractDiff)
         ddiffs = collect(dis, AbstractDiff)
         nMeasure = 10000
-        new{nBitGB}(target, gen, dis, zero_state(nBitGB), witness_op, c, N, gdiffs, ddiffs,
-                    VBit, RBit, Nblock, nBitGB, nBitDB, depthGB, depthDB, 
-                    nCBlockGB, nCBlockDB, nCBlockG, nCBlockD, nMeasure)
+        new{nBitGB}(target, gen, dis, zero_state(nBitGB), witnessOp, N, gdiffs, ddiffs,
+                    VBit, RBit, Nblock, nBitGB, nBitDB, depthGB, depthDB, nMeasure)
     end
 end
 
@@ -61,10 +94,10 @@ function psiGen(qg::QuMGAN, reg1::DefaultRegister)
     regBStore = 0.0
     blockN = 0
     if (qg.Nblock > 1)
-        for i = 1:(qg.nCBlockG - qg.nCBlockG)
+        for i = 1:(qg.Nblock - 1)
             regBit |>qg.generator[i] 
             #println("g2_1\n")
-            if i%(2*depthGB+1)==0
+            #if i%(2*depthGB+1)==0
                 blockN += 1
                 psRBit = (qg.nBitGB - qg.RBit + 1):qg.nBitGB
                 #println("g2_2_1 psRBit: $psRBit\n")
@@ -73,13 +106,11 @@ function psiGen(qg::QuMGAN, reg1::DefaultRegister)
                 #println("g2_2_2 regBit: $regBit\n")
                 measure_reset!( regBit, psRBit, val = 0)
                 #println("g2_3\n")
-            end
+            #end
             #println("g2_4\n")
         end
     end
-    for i = (qg.nCBlockG - qg.nCBlockGB + 1):qg.nCBlockG
-        regBit |>qg.generator[i]
-    end
+    regBit |>qg.generator[qg.Nblock]
     #println("g3 regBStore: $regBStore")
     [regBit, regBStore]
 end
@@ -91,9 +122,9 @@ function psiDis(qg::QuMGAN, reg1::DefaultRegister, reg1store::Float64)
     regBStore = bitstring(reg1store |> round |> Int64)
     blockN = 0
     if (qg.Nblock > 1)
-        for i = 1:(qg.nCBlockD - qg.nCBlockDB) 
+        for i = 1:(qg.Nblock - 1) 
             #println("regBit: $regBit")
-            if i%(2*depthDB+1)==0
+            #if i%(2*depthDB+1)==0
                 regBit |> qg.discriminator[i] 
                 #println("d2_1\n")
                 blockN += 1
@@ -103,13 +134,11 @@ function psiDis(qg::QuMGAN, reg1::DefaultRegister, reg1store::Float64)
                 #println("d2_2_2\n")
                 measure_reset!( regBit, psRBit, val =  numStore)
                 #println("d2_3\n")
-            end
+            #end
             #println("d2_4\n")
         end
     end
-    for i = (qg.nCBlockD - qg.nCBlockDB + 1): qg.nCBlockD
-        regBit |> qg.discriminator[i]
-    end
+    regBit |> qg.discriminator[qg.Nblock]
     #println("d2_4\n")
     regBit 
 end
@@ -176,8 +205,8 @@ function distance(qg::QuMGAN)
         GenM1 = expectCB(regGenAll[1])
         GenM2 = regGenAll[2]
         GenM = GenM1 + GenM2
-        [TarM, GenM, abs(TarM - GenM) ,(abs(TarM - GenM) / TarM)]
-        #abs(TarM - GenM) / TarM
+        #[TarM, GenM, abs(TarM - GenM) ,(abs(TarM - GenM) / TarM)]
+        abs(TarM - GenM) / TarM
     else
         # Tracedistance function when QuMGAN returns to QuGAN.
         tracedist(TarBitMPS(qg)[1], psiRegGen(qg))[]
@@ -185,73 +214,46 @@ function distance(qg::QuMGAN)
 end
 
 """Function to obtain the gradient of the matrix blocks in QuMGAN circuit."""
-function grad(qcg::QuMGAN)
+function grad(qg::QuMGAN)
     #println("gr1")
-    ggrad_g = opdiff.(()->psiGenDis(qcg), qcg.gdiffs, Ref(qcg.witness_op))
+    GgradG = opdiff.(()->psiGenDis(qg), qg.gdiffs, Ref(qg.witnessOp))
     #println("gr1_2 regd: $(nqubits(psiGenDis(qcg)))")
-    dgrad_g = opdiff.(()->psiGenDis(qcg), qcg.ddiffs, Ref(qcg.witness_op))
+    DgradG = opdiff.(()->psiGenDis(qg), qg.ddiffs, Ref(qg.witnessOp))
     #println("gr1_3 regt: $(nqubits(psiTarDis(qcg)))")
-    dgrad_t = opdiff.(()->psiTarDis(qcg), qcg.ddiffs, Ref(qcg.witness_op))
+    DgradT = opdiff.(()->psiTarDis(qg), qg.ddiffs, Ref(qg.witnessOp))
     #println("gr2")
-    [-ggrad_g; dgrad_t - dgrad_g]
+    [-GgradG; DgradT - DgradG]
 end
 
 """Training Function."""
-function train(qcg::QuMGAN{N}, g_learning_rate::Real, 
-                             d_learning_rate::Real, niter::Int) where N
-    ng = length(qcg.gdiffs)
-    for i in 1:niter
+function train(qg::QuMGAN{N}, 
+               gLearningRate::Real, dLearningRate::Real, nIter::Int) where N
+    ng = length(qg.gdiffs)
+    println(("Step = 0, Trace Distance = $(distance(qg))"))
+    for i = 1:nIter
         #println("t1")
-        g = grad(qcg)
-        #println("t2 g_l: $(length(g)) ng_l: $(length(length(qcg.gdiffs))) nd_l: $(length(length(qcg.ddiffs)))")
-        dispatch!(+, qcg.generator, -g[1:ng]*g_learning_rate)
-        dispatch!(-, qcg.discriminator, -g[ng+1:end]*d_learning_rate)
+        g = grad(qg)
+        #println("t2 g_l: $(length(g)) ng_l: $(length(length(qg.gdiffs))) nd_l: $(length(length(qg.ddiffs)))")
+        dispatch!(+, qg.generator, -g[1:ng]*gLearningRate)
+        dispatch!(-, qg.discriminator, -g[ng+1:end]*dLearningRate)
         #println("t3")
-        (i*20)%niter==0 && println("Step = $i, Trace Distance = $(distance(qcg))")
+        (i*20)%nIter==0 && println("Step = $i, Trace Distance = $(distance(qg))")
     end
 end
 
-"""Basic prarameters setup."""
-# Bit number of all.
-nBit = 5
-# Number of layers for GAN training in each generator block.
-depthGB = 2
-# Number of layers for GAN training in each discriminator block.
-depthDB = 5
-# Number V of bonding bits in each block.
-VBit = 3    
-# Number R of resusable bits in each block.
-RBit = 1 
 
-"""Secondary prarameters."""
-# Number of MPS Bl0ocks / Times of bit reusing.
-Nblock = Int((nBit - VBit - RBit) / RBit + 1) # Nblock::Int64. When nBit = VBit + RBit, circuit becomes non-MPS.
-# Number of total bits in each generator block. 
-nBitGB = VBit + RBit
-# Number of total bits in each discriminator block / the total bit number for the circuit. 
-nBitDB = nBitGB+1
+"""========== Main Program =========="""
 
-"""Generate random Target wavefunction."""
-target = rand_state(nBit)
+"""Setup parameters."""
+par = parSetup(3, 2, 5, 2, 1)
 
-"""Build Generator and Discriminator of QuMGAN circuit."""
-genblock = random_diff_circuit(nBitGB, depthGB, pair_ring(nBitGB)) 
-disblock = random_diff_circuit(nBitDB, depthDB, pair_ring(nBitDB)) 
-gen = genblock
-dis = disblock
-if Nblock > 1
-    for i in 1: (Nblock-1)
-        global gen 
-        global dis
-        gen = chain(nBitGB, gen, genblock)
-        dis = chain(nBitDB, dis, disblock)
-    end
-end
-gen = dispatch!(gen, :random) |> autodiff(:QC)
-dis = dispatch!(dis, :random) |> autodiff(:QC)
+"""Generate random Target wave function."""
+target = rand_state(par.nBit)
 
-"""Declare QuMGAN."""
-qcg = QuMGAN(target, gen, dis, VBit, RBit, Nblock, nBitGB, nBitDB, depthGB, depthDB)
+"""Build QuMGAN Circuit."""
+# qcg = QuMGAN(target, VBit, RBit, Nblock, nBitGB, nBitDB, depthGB, depthDB)
+qcg = QuMGAN(target, par.VBit, par.RBit, par.depthGB, par.depthDB, 
+             par.Nblock, par.nBitGB, par.nBitDB)
 
-"""Training."""
+"""Training QuMGAN to copy target wave function."""
 train(qcg, 0.1, 0.2, 1000)
